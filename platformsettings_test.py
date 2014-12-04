@@ -134,6 +134,11 @@ OSX_DNS_STATE_SNOW_LEOPARD = """
 }
 """
 
+LINUX_NM_DEV_LIST = """
+IP4.ADDRESS[1]:ip = 111.222.123.234/22, gw = 111.222.123.1
+IP4.DNS[1]:111.222.0.1
+IP4.DNS[2]:111.222.0.2
+"""
 
 class SystemProxyTest(unittest.TestCase):
 
@@ -236,6 +241,47 @@ class OsxPlatformSettingsTest(unittest.TestCase):
     self.assertRaises(platformsettings.DnsReadError,
                       self.settings._get_primary_nameserver)
 
+class LinuxSettingsNM(platformsettings._LinuxPlatformSettings):
+  def __init__(self):
+    super(LinuxSettingsNM, self).__init__()
+    self.state = None  # varies by test
+    self._nmcli_executable = "/usr/bin/nmcli" # make sure it is tested.
+
+  def _nmcli(self, *args):
+    if args[2] == 'state' and args[3] == 'nm':
+      return self.state + '\n'
+    if self.state == 'connected' and args[3] == 'dev' and args[4] == 'list':
+      return LINUX_NM_DEV_LIST
+    if self.state == 'disconnected' or self.state == 'asleep':
+      return ""
+
+class LinuxPlatformSettingsNMTest(unittest.TestCase):
+  def setUp(self):
+    self.settings = LinuxSettingsNM()
+
+  def test_get_primary_nameserver_nm(self):
+    self.settings.state = 'connected'
+    self.assertEqual('111.222.0.1', self.settings._get_primary_nameserver())
+    try:
+      self.settings.state = 'disconnected'
+      self.assertNotEqual('111.222.0.1', self.settings._get_primary_nameserver())
+    except platformsettings.DnsReadError, e:
+      pass
+    try:
+      self.settings.state = 'asleep'
+      self.assertNotEqual('111.222.0.1', self.settings._get_primary_nameserver())
+    except platformsettings.DnsReadError, e:
+      pass
+
+  def test_set_primary_nameserver_nm(self):
+    self.settings.state = 'connected'
+    with self.assertRaises(platformsettings.DnsUpdateError) as e1:
+      self.settings._set_primary_nameserver('127.0.0.1')
+    self.assertTrue('--no-dns_forwarding' in e1.exception.message)
+    self.settings.state = 'disconnected'
+    with self.assertRaises(platformsettings.DnsUpdateError) as e2:
+      self.settings._set_primary_nameserver('127.0.0.1')
+    self.assertTrue('sudo' in e2.exception.message)
 
 if __name__ == '__main__':
   unittest.main()

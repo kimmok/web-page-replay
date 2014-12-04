@@ -477,8 +477,13 @@ class _LinuxPlatformSettings(_PosixPlatformSettings):
   """
   RESOLV_CONF = '/etc/resolv.conf'
   ROUTE_RE = re.compile('initcwnd (\d+)')
+  NM_DNS_RE = re.compile('IP4.DNS\[\d+\]:(\d+.\d+.\d+.\d+)')
   TCP_BASE_MSS = 'net.ipv4.tcp_base_mss'
   TCP_MTU_PROBING = 'net.ipv4.tcp_mtu_probing'
+
+  def __init__(self):
+    super(_LinuxPlatformSettings, self).__init__()
+    self._nmcli_executable = FindExecutable('nmcli')
 
   def _get_default_route_line(self):
     stdout = self._check_output('ip', 'route')
@@ -534,7 +539,22 @@ class _LinuxPlatformSettings(_PosixPlatformSettings):
       raise DnsUpdateError('Could not find a suitable nameserver entry in %s' %
                            self.RESOLV_CONF)
 
+  def _use_network_manager(self):
+    if self._nmcli_executable != None:
+      stdout = self._nmcli('-t', '-f', 'state', 'nm')
+      if stdout.strip() == 'connected':
+        return True
+    return False
+
+  def _nmcli(self, *args):
+    return self._check_output(self._nmcli_executable, *args)
+
   def _get_primary_nameserver(self):
+    if self._use_network_manager():
+      stdout = self._nmcli('-t', '-f', 'IP4', 'dev', 'list')
+      m = self.NM_DNS_RE.search(stdout)
+      if m:
+        return m.group(1)
     try:
       resolv_file = open(self.RESOLV_CONF)
     except IOError:
@@ -546,6 +566,9 @@ class _LinuxPlatformSettings(_PosixPlatformSettings):
 
   def _set_primary_nameserver(self, dns):
     """Replace the first nameserver entry with the one given."""
+    if self._use_network_manager():
+      raise DnsUpdateError('Connection is managed by NetworkManager. Only --no-dns_forwarding is supported.')
+
     try:
       self._write_resolve_conf(dns)
     except OSError, e:
