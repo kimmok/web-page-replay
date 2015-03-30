@@ -174,15 +174,54 @@ class DetailedHTTPConnection(httplib.HTTPConnection):
   """Preserve details relevant to replaying connections."""
   response_class = DetailedHTTPResponse
 
-
 class DetailedHTTPSResponse(DetailedHTTPResponse):
   """Preserve details relevant to replaying SSL responses."""
   pass
 
+try:
+  from distutils.version import StrictVersion
+  from OpenSSL import SSL
+  import OpenSSL.version
+  from socket import _fileobject
+  if StrictVersion(OpenSSL.__version__) < StrictVersion('0.13'):
+    raise ImportError('Need pyOpenSSL >= 0.13 for client usage')
 
-class DetailedHTTPSConnection(httplib.HTTPSConnection):
-  """Preserve details relevant to replaying SSL connections."""
-  response_class = DetailedHTTPSResponse
+  SSLConnection = SSL.Connection
+
+  class FOSSLConnection(SSLConnection):
+    """A connection object that can be accessed as a file object.
+    Needed so that httplib can use SSL.Connection.
+    """
+    def makefile(self, mode, bufsize=-1):
+      return _fileobject(self, mode, bufsize)
+
+  class DetailedHTTPSConnection(DetailedHTTPConnection):
+    """Preserve details relevant to replaying SSL connections.
+    A pyOpenSSL implementation of DetailedHTTPConnection. This
+    supports TLS SNI extension, which is needed for some content
+    distribution networks."""
+    response_class = DetailedHTTPSResponse
+    default_port = httplib.HTTPS_PORT
+    def __init__(self, host, port):
+      DetailedHTTPConnection.__init__(self, host, port)
+      self.context = SSL.Context(SSL.SSLv23_METHOD)
+
+    def connect(self):
+      DetailedHTTPConnection.connect(self)
+      self.sock = FOSSLConnection(self.context, self.sock)
+      self.sock.set_connect_state()
+      self.sock.set_tlsext_host_name(self._host_name)
+      self.sock.do_handshake()
+
+    def set_host_name(self, host_name):
+      self._host_name = host_name
+
+except ImportError, e:
+  class DetailedHTTPSConnection(httplib.HTTPSConnection):
+    """Preserve details relevant to replaying SSL connections."""
+    response_class = DetailedHTTPSResponse
+    def set_host_name(self, dummy):
+      pass
 
 
 class RealHttpFetch(object):
@@ -293,6 +332,7 @@ class RealHttpFetch(object):
 
     if is_ssl:
       connection = DetailedHTTPSConnection(connection_ip, connection_port)
+      connection.set_host_name(connection_host)
       if system_proxy:
         connection.set_tunnel(self, request_host, request_port)
     else:
